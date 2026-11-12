@@ -42,7 +42,7 @@ export async function runChat({ conversationId, message, userId, onEvent }) {
   if (routing.memory) {
     onEvent({ type: 'progress', stage: 'memory', detail: 'Retrieving conversation context...' });
     try {
-      memory = await retrieveMemory(message, env.USER_TIMEZONE, budgetController.signal, userId);
+      memory = await retrieveMemory(message, env.USER_TIMEZONE, budgetController.signal, userId, userMessage.id);
       if (memory.chunks.length) {
         onEvent({ type: 'findings', findingsType: 'memory', items: memory.chunks.map((c) => ({ topic: c.topic, date: c.startAt, conversationId: c.conversationId, snippet: c.content.slice(0, 120) })) });
         onEvent({ type: 'progress', stage: 'memory', detail: `Found ${memory.chunks.length} relevant conversation${memory.chunks.length > 1 ? 's' : ''}` });

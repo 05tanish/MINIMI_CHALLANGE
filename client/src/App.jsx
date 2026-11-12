@@ -20,14 +20,26 @@ function renderText(text) {
     if (/^\*[^*]+\*$/.test(part)) return <em key={`${keyPrefix}-${i}`}>{part.slice(1, -1)}</em>;
     return <span key={`${keyPrefix}-${i}`}>{part}</span>;
   });
-  return text.split('\n').map((line, i) => {
-    if (line.startsWith('## ')) return <h2 key={i}>{inline(line.slice(3), i)}</h2>;
-    if (line.startsWith('### ')) return <h3 key={i}>{inline(line.slice(4), i)}</h3>;
-    if (line.trim() === '---') return <hr key={i} />;
-    if (/^\d+\. /.test(line)) return <div className="answer-list-item" key={i}>{line.match(/^\d+/)[0]}. {inline(line.replace(/^\d+\. /, ''), i)}</div>;
-    if (line.startsWith('- ')) return <div className="answer-list-item" key={i}>• {inline(line.slice(2), i)}</div>;
-    return line ? <p key={i}>{inline(line, i)}</p> : <br key={i} />;
-  });
+  const lines = text.split('\n'); const output = [];
+  const cells = (line) => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((cell) => cell.trim());
+  const isTableRule = (line) => /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(line.trim());
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (i + 1 < lines.length && line.includes('|') && isTableRule(lines[i + 1])) {
+      const headers = cells(line); const rows = []; i += 2;
+      while (i < lines.length && lines[i].includes('|') && lines[i].trim()) { rows.push(cells(lines[i])); i++; }
+      i--;
+      output.push(<div className="answer-table-wrap" key={`table-${i}`}><table className="answer-table"><thead><tr>{headers.map((cell, j) => <th key={j}>{inline(cell, `th-${i}-${j}`)}</th>)}</tr></thead><tbody>{rows.map((row, j) => <tr key={j}>{headers.map((_, k) => <td key={k}>{inline(row[k] ?? '', `td-${i}-${j}-${k}`)}</td>)}</tr>)}</tbody></table></div>);
+      continue;
+    }
+    if (line.startsWith('## ')) output.push(<h2 key={i}>{inline(line.slice(3), i)}</h2>);
+    else if (line.startsWith('### ')) output.push(<h3 key={i}>{inline(line.slice(4), i)}</h3>);
+    else if (line.trim() === '---') output.push(<hr key={i} />);
+    else if (/^\d+\. /.test(line)) output.push(<div className="answer-list-item" key={i}>{line.match(/^\d+/)[0]}. {inline(line.replace(/^\d+\. /, ''), i)}</div>);
+    else if (line.startsWith('- ')) output.push(<div className="answer-list-item" key={i}>• {inline(line.slice(2), i)}</div>);
+    else output.push(line ? <p key={i}>{inline(line, i)}</p> : <br key={i} />);
+  }
+  return output;
 }
 
 const diffStatus = { changed: { label: 'CHANGED', cls: 'd-changed' }, unchanged: { label: 'UNCHANGED', cls: 'd-unchanged' }, new_finding: { label: 'NEW', cls: 'd-new' }, no_current_evidence: { label: 'NO CURRENT DATA', cls: 'd-missing' } };
