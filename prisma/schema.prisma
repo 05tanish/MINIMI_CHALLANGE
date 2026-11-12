@@ -9,6 +9,7 @@ datasource db {
 
 model Conversation {
   id        String   @id @default(cuid())
+  userId    String
   title     String   @default("New conversation")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -17,8 +18,29 @@ model Conversation {
   summary   ConversationSummary?
   sources   ResearchSource[]
   mentions  EntityMention[]
+  user      User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@index([updatedAt])
+  @@index([userId, updatedAt])
+}
+
+model User {
+  id           String @id @default(cuid())
+  email        String @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+  sessions     Session[]
+  conversations Conversation[]
+}
+
+model Session {
+  tokenHash String @id
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
 }
 
 model Message {

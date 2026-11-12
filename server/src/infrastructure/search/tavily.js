@@ -4,7 +4,7 @@ import { withRetry } from '../../utils/retry.js';
 export async function searchWeb(query, signal) {
   if (!env.TAVILY_API_KEY) throw Object.assign(new Error('Web search is not configured'), { code: 'SEARCH_NOT_CONFIGURED' });
   const response = await withRetry(async () => {
-    const result = await fetch('https://api.tavily.com/search', { method: 'POST', signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ api_key: env.TAVILY_API_KEY, query, search_depth: 'basic', max_results: 5, include_answer: false }) });
+    const result = await fetch('https://api.tavily.com/search', { method: 'POST', signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ api_key: env.TAVILY_API_KEY, query, search_depth: env.SEARCH_DEPTH, max_results: 5, include_answer: false, include_raw_content: true }) });
     if (!result.ok) {
       const error = Object.assign(new Error(`Search provider returned ${result.status}`), { code: 'SEARCH_FAILED', status: result.status, retryAfter: result.headers.get('retry-after') });
       if (result.status < 500 && result.status !== 429) error.noRetry = true;
@@ -13,7 +13,7 @@ export async function searchWeb(query, signal) {
     return result;
   }, { retries: 2, signal, shouldRetry: (error) => !error.noRetry && (error.status === 429 || error.status >= 500 || error.name === 'TypeError') });
   const body = await response.json(); const retrievedAt = new Date().toISOString();
-  return (body.results ?? []).map((r) => ({ title: r.title ?? r.url, url: r.url, snippet: r.content ?? '', publishedAt: r.published_date ?? null, retrievedAt }));
+  return (body.results ?? []).map((r) => ({ title: r.title ?? r.url, url: r.url, snippet: r.content ?? '', rawContent: r.raw_content ?? null, publishedAt: r.published_date ?? null, retrievedAt }));
 }
 export async function searchQueries(queries, signal) {
   const startedAt = Date.now();

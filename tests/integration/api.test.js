@@ -7,6 +7,11 @@ describe('HTTP API', () => {
     const response = await request(app).post('/api/chat').send({ message: '' });
     expect(response.status).toBe(400); expect(response.body.error.code).toBe('INVALID_REQUEST');
   });
+  it('rejects weak signup credentials before accessing the database', async () => {
+    const response = await request(app).post('/api/auth/signup').send({ email: 'not-an-email', password: 'short' });
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe('INVALID_CREDENTIALS');
+  });
   it('reports application health and dependency readiness separately', async () => {
     const response = await request(app).get('/api/health');
     expect([200, 503]).toContain(response.status); expect(response.body.data.application).toBe('ready');
