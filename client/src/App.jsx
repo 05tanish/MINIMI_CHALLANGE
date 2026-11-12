@@ -56,11 +56,24 @@ function FindingsPanel({ findings }) {
 export default function App() {
   const [currentUser, setCurrentUser] = useState(undefined);
   const [conversations, setConversations] = useState([]); const [id, setId] = useState(null); const [messages, setMessages] = useState([]);
+  const [deletingId, setDeletingId] = useState(null);
   const [input, setInput] = useState(''); const [status, setStatus] = useState(''); const [statusDetail, setStatusDetail] = useState(''); const [busy, setBusy] = useState(false); const [error, setError] = useState('');
   const [findings, setFindings] = useState([]);
   const abort = useRef(null); const bottom = useRef(null);
   async function loadList() { try { const r = await apiFetch('/api/conversations'); const j = await r.json(); if (j.success) setConversations(j.data.items); } catch {} }
   async function loadConversation(cid) { const r = await apiFetch(`/api/conversations/${cid}`); const j = await r.json(); if (j.success) { setId(cid); setMessages(j.data.messages.map((m) => ({ ...m, sources: m.sources ?? [], diff: [], searchRounds: 0 }))); setError(''); } }
+  async function deleteConversation(conversation) {
+    if (!window.confirm(`Delete “${conversation.title}”? Its messages, saved sources, and memory will be permanently removed.`)) return;
+    setDeletingId(conversation.id); setError('');
+    try {
+      const response = await apiFetch(`/api/conversations/${conversation.id}`, { method: 'DELETE' });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error?.message ?? 'Unable to delete conversation.');
+      setConversations((items) => items.filter((item) => item.id !== conversation.id));
+      if (id === conversation.id) { setId(null); setMessages([]); setFindings([]); }
+    } catch (e) { setError(e.message); }
+    finally { setDeletingId(null); }
+  }
   useEffect(() => { apiFetch('/api/auth/me').then((r) => r.ok ? r.json() : null).then((j) => setCurrentUser(j?.data?.user ?? null)).catch(() => setCurrentUser(null)); }, []);
   useEffect(() => { if (currentUser) loadList(); }, [currentUser]); useEffect(() => { bottom.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, status, findings]);
   async function submit(event) {
@@ -88,7 +101,7 @@ export default function App() {
   if (currentUser === undefined) return <main className="auth-shell"><div className="auth-card">Checking your session…</div></main>;
   if (!currentUser) return <AuthScreen onAuthenticated={setCurrentUser} />;
   return <div className="shell">
-    <aside className="sidebar"><div className="brand"><div className="mark">m</div><div><b>minimi</b><small>RESEARCH</small></div></div><button className="new-chat" onClick={() => { setId(null); setMessages([]); setError(''); }}>＋ <span>New conversation</span></button><div className="side-label">RECENT</div><nav>{conversations.map((c) => <button className={`conversation ${id === c.id ? 'active' : ''}`} key={c.id} onClick={() => loadConversation(c.id)}>{c.title}</button>)}</nav><div className="side-footer"><span className="dot"/> {currentUser.email}<button className="auth-switch" onClick={async () => { await apiFetch('/api/auth/logout', { method: 'POST' }); setCurrentUser(null); setConversations([]); setMessages([]); setId(null); }}>Sign out</button></div></aside>
+    <aside className="sidebar"><div className="brand"><div className="mark">m</div><div><b>minimi</b><small>RESEARCH</small></div></div><button className="new-chat" onClick={() => { setId(null); setMessages([]); setError(''); }}>＋ <span>New conversation</span></button><div className="side-label">RECENT</div><nav>{conversations.map((c) => <div className={`conversation-row ${id === c.id ? 'active' : ''}`} key={c.id}><button className="conversation" onClick={() => loadConversation(c.id)} title={c.title}>{c.title}</button><button className="conversation-delete" disabled={deletingId === c.id} onClick={() => deleteConversation(c)} aria-label={`Delete ${c.title}`} title="Delete conversation">{deletingId === c.id ? '…' : '×'}</button></div>)}</nav><div className="side-footer"><span className="dot"/> {currentUser.email}<button className="auth-switch" onClick={async () => { await apiFetch('/api/auth/logout', { method: 'POST' }); setCurrentUser(null); setConversations([]); setMessages([]); setId(null); }}>Sign out</button></div></aside>
     <main className="main"><header className="topbar"><div className="mobile-brand">minimi <span>research</span></div><span className="connection"><i/> Private workspace</span></header>
       <section className="thread">
         {messages.length === 0 ? <div className="welcome"><div className="welcome-icon">✳</div><p className="eyebrow">YOUR CONVERSATION, WITH CONTEXT</p><h1>Research that remembers<br/>what matters.</h1><p className="subhead">Ask about past discussions, get current answers, and see how the evidence changed.</p><div className="suggestions"><button onClick={() => setInput('What did I ask you last week?')}>↗ &nbsp;What did I ask you last week?</button><button onClick={() => setInput('Has the pricing we discussed changed since?')}>↗ &nbsp;Check a price against our discussion</button><button onClick={() => setInput('Find the latest release notes for the product we discussed')}>↗ &nbsp;Find recent product updates</button></div></div> : <div className="messages">{messages.map((m, i) => <article className={`message ${m.role}`} key={i}><div className="avatar">{m.role === 'user' ? 'Y' : '✳'}</div><div className="bubble"><div className="role-label">{m.role === 'user' ? 'YOU' : 'MINIMI'}</div><div className="content">{renderText(m.content)}{m.streaming && <span className="cursor"/>}</div>{m.diff?.length > 0 && <DiffTable entries={m.diff} />}{m.sources?.length > 0 && <div className="sources"><div className="sources-title">SOURCES{m.searchRounds > 1 && <span className="rounds-badge">· {m.searchRounds} search rounds</span>}</div>{m.sources.map((s) => <a href={s.url} target="_blank" rel="noreferrer" key={s.id}><span className="source-id">{s.id}</span><span><b>{s.title}</b><small>{(() => { try { return new URL(s.url).hostname; } catch { return s.url; } })()}</small></span><span className="external">↗</span></a>)}</div>}</div></article>)}</div>}

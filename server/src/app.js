@@ -62,6 +62,21 @@ app.patch('/api/conversations/:id', async (req, res, next) => {
 });
 app.delete('/api/conversations/:id', async (req, res, next) => {
   if (!prisma) return next(Object.assign(new Error('Database is not configured'), { code: 'DATABASE_UNAVAILABLE' }));
-  try { const result = await prisma.conversation.deleteMany({ where: { id: req.params.id, userId: req.user.id } }); if (!result.count) return res.status(404).json({ success: false, data: null, error: { code: 'NOT_FOUND', message: 'Conversation was not found.' } }); res.json({ success: true, data: { deleted: true }, error: null }); } catch (error) { next(error); }
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const conversation = await tx.conversation.findFirst({ where: { id: req.params.id, userId: req.user.id }, select: { id: true } });
+      if (!conversation) return false;
+      const messages = await tx.message.findMany({ where: { conversationId: conversation.id }, select: { id: true } });
+      const messageIds = messages.map((message) => message.id);
+      if (messageIds.length) await tx.researchClaim.deleteMany({ where: { messageId: { in: messageIds } } });
+      // Delete vector rows explicitly; the FK cascade also removes the rest
+      // of the conversation's related records atomically.
+      await tx.memoryChunk.deleteMany({ where: { conversationId: conversation.id } });
+      await tx.conversation.delete({ where: { id: conversation.id } });
+      return true;
+    });
+    if (!result) return res.status(404).json({ success: false, data: null, error: { code: 'NOT_FOUND', message: 'Conversation was not found.' } });
+    res.json({ success: true, data: { deleted: true }, error: null });
+  } catch (error) { next(error); }
 });
 app.use(errorHandler);
