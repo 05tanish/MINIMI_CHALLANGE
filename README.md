@@ -5,6 +5,8 @@ A conversational research app that retrieves relevant prior discussions, searche
 ## Features
 
 - Persistent conversations and messages in PostgreSQL/Neon.
+- Idempotent chat turns with durable status/events and a PostgreSQL outbox worker for retryable memory indexing and summaries.
+- Per-user persisted research claims with source provenance and tenant-scoped retrieval.
 - Hybrid history retrieval: PostgreSQL full-text search, Gemini embeddings with pgvector, entity mentions, temporal filters and reciprocal rank fusion.
 - **Adaptive query planning**: search queries generated from memory entities, so referential questions ("has any of them changed?") get entity-specific searches.
 - **Bounded agentic research loop**: iteratively searches, evaluates coverage, and refines queries for missing entities. Bounded by configurable rounds and time budget.
@@ -14,7 +16,8 @@ A conversational research app that retrieves relevant prior discussions, searche
 - Tavily web search with URL deduplication, timestamps, bounded concurrency and partial-failure reporting.
 - Gemini answer generation streamed to a responsive React UI over SSE with progressive findings (memory matches, search results, diff table).
 - Citation IDs validated against search results; claim content verified against source text.
-- Zod validation, rate limits, Helmet, configurable CORS and structured Pino logs.
+- SSRF-aware bounded source extraction, Zod validation, rate limits, Helmet, configurable CORS and structured Pino logs.
+- Protected operational metrics for HTTP latency/errors, provider latency/token usage, and background job outcomes.
 
 ## Architecture
 
@@ -49,7 +52,7 @@ npm run db:generate
 npm run db:migrate
 ```
 
-The checked-in SQL migrations create relational tables, user/session tables, and pgvector/full-text indexes. The auth migration moves pre-existing conversations to a disabled legacy account so it cannot accidentally expose them to a newly registered user. `prisma migrate deploy` only applies pending migrations; it does not reset or drop data. For local schema iteration, use `npm run db:migrate:dev` against a disposable development database. Back up hosted data before schema changes.
+The checked-in SQL migrations create relational tables, user/session tables, idempotent chat turns, outbox events, and pgvector/full-text indexes. The auth migration moves pre-existing conversations to a disabled legacy account so it cannot accidentally expose them to a newly registered user. `prisma migrate deploy` only applies pending migrations; it does not reset or drop data. For local schema iteration, use `npm run db:migrate:dev` against a disposable development database. Back up hosted data before schema changes.
 
 ## Run locally
 
@@ -70,11 +73,15 @@ Unit tests cover routing, dates, entity extraction, chunking, RRF, citations and
 ## API
 
 - `POST /api/chat` — JSON `{ "conversationId?": "...", "message": "..." }`; responds with SSE events: `conversation`, `progress` (with `detail`), `findings` (memory matches, search results, diff entries), `delta`, `done` (with `sources`, `diff`, `diffSummary`, `searchRounds`), or `error`.
+- `POST /api/chat` requires an `Idempotency-Key` header. Reuse the key and send `X-After-Sequence` to resume a turn's persisted SSE events after a disconnect.
+- `GET /api/chat/turns/:id` — status and saved answer for an authenticated user's turn.
+- `GET /api/chat/turns/:id/events?after=N` — persisted events after sequence `N`.
 - `GET /api/conversations?limit=20&cursor=...` — paginated history.
 - `GET /api/conversations/:id` — messages and attached sources.
 - `PATCH /api/conversations/:id` — rename via `{ "title": "..." }`.
 - `DELETE /api/conversations/:id` — cascade-delete the conversation and dependent history.
 - `GET /api/health` — app and database readiness plus provider configuration state.
+- `GET /api/metrics` — authenticated process-level latency, provider, and outbox metrics.
 
 Responses use `{ success, data, error }` where applicable. SSE progress names are high-level UI stages and do not expose model reasoning. `POST /api/auth/signup`, `POST /api/auth/login`, and `POST /api/auth/logout` manage accounts; `GET /api/auth/me` reports the active account. Browser credentials are opaque server-side sessions stored in an HttpOnly cookie; no bearer token is embedded in the client bundle or local storage.
 
@@ -86,7 +93,7 @@ Authentication uses scrypt password hashes, random opaque session tokens (only S
 
 ## Deployment
 
-Deploy the client and API behind a shared HTTPS site or same-site domains (for example, `app.example.com` and `api.example.com`), set `CLIENT_ORIGIN`, `DATABASE_URL`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `TAVILY_API_KEY`, and `TRUST_PROXY=true` when TLS terminates at one trusted edge proxy, then apply migrations via `npm run db:migrate`. Use a pooled Neon runtime URL and an appropriate direct URL only if your migration workflow requires it. Free-tier quotas and provider terms change; check current provider documentation before launch.
+Deploy the client and API behind a shared HTTPS site or same-site domains (for example, `app.example.com` and `api.example.com`), set `CLIENT_ORIGIN`, `DATABASE_URL`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `TAVILY_API_KEY`, and `TRUST_PROXY=true` when TLS terminates at one trusted edge proxy, then apply migrations via `npm run db:migrate`. The new architecture migration must be deployed before starting this server version. Use a pooled Neon runtime URL and an appropriate direct URL only if your migration workflow requires it. Free-tier quotas and provider terms change; check current provider documentation before launch.
 
 ## Limitations
 
@@ -95,7 +102,7 @@ Deploy the client and API behind a shared HTTPS site or same-site domains (for e
 - Structured claim extraction uses LLM-based extraction with a regex fallback; accuracy depends on the model and text quality.
 - Self-verification uses keyword overlap and price matching; it is a heuristic check, not a full semantic verification.
 - The agentic research loop is bounded by `MAX_SEARCH_ROUNDS` and `RESEARCH_BUDGET_MS`; complex questions with many entities may not get full coverage within the budget.
-- The `ResearchClaim` and `ConversationSummary` tables exist in the schema but are not yet persisted; claims are extracted transiently per query.
+- Persistent claims and extractive rolling summaries are indexed asynchronously through the PostgreSQL outbox. Embeddings require the configured embedding provider; keyword and full-text retrieval remain available if embedding calls fail.
 - The automated evaluation set is declarative; external-service and full database evaluation needs configured credentials and a test database.
 - The response is emitted after research is complete; provider failover buffers an answer until the selected provider completes so a failed partial Gemini response cannot be duplicated or mixed with Groq output.
 
@@ -105,5 +112,5 @@ Deploy the client and API behind a shared HTTPS site or same-site domains (for e
 - PostgreSQL is the source of truth for users, sessions, conversations, messages, and source records. Derived chunks and vectors can be rebuilt. Ownership is enforced in database queries, including hybrid memory retrieval.
 - Put a shared Redis-compatible service in front of public endpoints for distributed rate limits and (at higher scale) provider circuit state. Current local fallbacks keep development usable but are not globally consistent across replicas.
 - Keep provider keys server-side. Gemini is primary; Groq is a separately configured answer fallback. Add provider-specific timeouts, bounded retries with jitter, per-provider circuit breakers, usage/cost telemetry, and an operational alert on sustained 429s. A different provider does not fix Tavily, database, or embedding quotas.
-- For long research jobs, move orchestration to a durable queue (for example, Redis-backed jobs) and stream job events by SSE. Add idempotency keys before clients retry a request whose persistence outcome is unknown.
+- Research work uses a PostgreSQL outbox and persisted turn events, with idempotent client retries and SSE resume. At higher scale, move queue polling to dedicated worker replicas and add distributed concurrency controls.
 - At launch, monitor request IDs, provider/model/status/latency, search rounds, token usage, and DB latency without logging prompts, passwords, cookies, or authorization data. Add backups and tested restore procedures before storing important conversation history.

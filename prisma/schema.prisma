@@ -18,6 +18,8 @@ model Conversation {
   summary   ConversationSummary?
   sources   ResearchSource[]
   mentions  EntityMention[]
+  turns     ChatTurn[]
+  claims    ResearchClaim[]
   user      User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, updatedAt])
@@ -30,6 +32,8 @@ model User {
   createdAt    DateTime @default(now())
   sessions     Session[]
   conversations Conversation[]
+  turns        ChatTurn[]
+  claims       ResearchClaim[]
 }
 
 model Session {
@@ -49,10 +53,13 @@ model Message {
   role           String
   content        String   @db.Text
   createdAt      DateTime @default(now())
+  searchVector   Unsupported("tsvector")?
   conversation  Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   mentions       EntityMention[]
   claims         ResearchClaim[]
   sources        ResearchSource[]
+  userTurn       ChatTurn? @relation("TurnUserMessage")
+  assistantTurn ChatTurn? @relation("TurnAssistantMessage")
 
   @@index([conversationId, createdAt])
 }
@@ -106,6 +113,58 @@ model ConversationSummary {
   conversation  Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 }
 
+model ChatTurn {
+  id                String   @id @default(cuid())
+  userId            String
+  conversationId    String
+  userMessageId     String   @unique
+  assistantMessageId String? @unique
+  idempotencyKey    String
+  status            String   @default("queued")
+  errorCode         String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  user              User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversation      Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  userMessage       Message @relation("TurnUserMessage", fields: [userMessageId], references: [id], onDelete: Cascade)
+  assistantMessage  Message? @relation("TurnAssistantMessage", fields: [assistantMessageId], references: [id], onDelete: SetNull)
+  events            ChatTurnEvent[]
+
+  @@unique([userId, idempotencyKey])
+  @@index([userId, createdAt])
+  @@index([status, updatedAt])
+}
+
+model ChatTurnEvent {
+  id        String   @id @default(cuid())
+  turnId    String
+  sequence  Int
+  type      String
+  payload   Json
+  createdAt DateTime @default(now())
+  turn      ChatTurn @relation(fields: [turnId], references: [id], onDelete: Cascade)
+
+  @@unique([turnId, sequence])
+  @@index([turnId, createdAt])
+}
+
+model OutboxEvent {
+  id          String   @id @default(cuid())
+  type        String
+  aggregateId String
+  payload     Json
+  status      String   @default("pending")
+  attempts    Int      @default(0)
+  runAt       DateTime @default(now())
+  lockedAt    DateTime?
+  lastError   String?  @db.Text
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([status, runAt, createdAt])
+  @@index([aggregateId, status])
+}
+
 model ResearchSource {
   id             String @id @default(cuid())
   conversationId String
@@ -119,6 +178,7 @@ model ResearchSource {
   metadata       Json @default("{}")
   conversation  Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   message        Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  claims         ResearchClaim[]
 
   @@unique([messageId, url])
   @@index([conversationId, retrievedAt])
@@ -126,6 +186,8 @@ model ResearchSource {
 
 model ResearchClaim {
   id         String @id @default(cuid())
+  userId     String
+  conversationId String?
   entityId   String
   attribute  String
   value      String
@@ -133,8 +195,14 @@ model ResearchClaim {
   recordedAt DateTime @default(now())
   sourceId   String?
   messageId  String?
+  origin     String @default("memory")
+  evidenceKey String @unique
   entity     Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  user       User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   message    Message? @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  source     ResearchSource? @relation(fields: [sourceId], references: [id], onDelete: SetNull)
 
   @@index([entityId, attribute, recordedAt])
+  @@index([userId, entityId, attribute, recordedAt])
 }

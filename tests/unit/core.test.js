@@ -12,6 +12,10 @@ import { verifyClaims, extractClaimCitationPairs } from '../../server/src/module
 import { planSearchQueries } from '../../server/src/modules/agent/research.js';
 import { estimateTokens, truncateToTokens } from '../../server/src/utils/tokens.js';
 import { hashPassword, verifyPassword } from '../../server/src/modules/auth/service.js';
+import { assertPublicHttpUrl } from '../../server/src/infrastructure/search/extract.js';
+import { readFileSync } from 'node:fs';
+
+const evaluationScenarios = JSON.parse(readFileSync(new URL('../evaluation/scenarios.json', import.meta.url), 'utf8'));
 
 describe('intent routing', () => {
   it('routes history-only questions to memory without search', () => expect(routeIntent('What did I ask you last week?')).toMatchObject({ memory: true, web: false }));
@@ -26,6 +30,16 @@ describe('account password security', () => {
     expect(encoded).not.toContain('correct horse');
     expect(await verifyPassword('correct horse battery staple', encoded)).toBe(true);
     expect(await verifyPassword('wrong password', encoded)).toBe(false);
+  });
+});
+
+describe('web page request safety', () => {
+  it.each(['http://127.0.0.1/admin', 'http://10.0.0.1/', 'http://169.254.169.254/latest/meta-data/', 'http://[::1]/'])('blocks private network target %s', async (url) => {
+    await expect(assertPublicHttpUrl(url)).rejects.toMatchObject({ code: 'EXTRACT_BLOCKED' });
+  });
+  it('rejects non-http schemes and credential-bearing URLs', async () => {
+    await expect(assertPublicHttpUrl('file:///etc/passwd')).rejects.toMatchObject({ code: 'EXTRACT_FAILED' });
+    await expect(assertPublicHttpUrl('https://user:pass@example.com/')).rejects.toMatchObject({ code: 'EXTRACT_FAILED' });
   });
 });
 
@@ -244,6 +258,21 @@ describe('adaptive query planning', () => {
     const queries = planSearchQueries('test', analysis, memoryChunks);
     // Default MAX_SEARCH_QUERIES is 4
     expect(queries.length).toBeLessThanOrEqual(4);
+  });
+});
+
+describe('offline research scenario evaluation', () => {
+  it('keeps every evaluation case uniquely addressable', () => {
+    const ids = evaluationScenarios.map((scenario) => scenario.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids.length).toBeGreaterThanOrEqual(20);
+  });
+  it.each(evaluationScenarios)('preserves the question as the first search for $id', (scenario) => {
+    const queries = planSearchQueries(scenario.query, { entities: [], searchQueries: [] }, []);
+    expect(queries[0]).toBe(scenario.query);
+  });
+  it.each(evaluationScenarios.filter((scenario) => scenario.checks.some((check) => ['date-filter', 'weekday-filter', 'temporal', 'ambiguous-date'].includes(check))))('recognizes temporal intent in $id', (scenario) => {
+    expect(extractDateRange(scenario.query, new Date('2026-11-13T00:00:00Z'), 'Asia/Kolkata')).not.toBeNull();
   });
 });
 

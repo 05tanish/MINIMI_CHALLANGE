@@ -9,7 +9,10 @@ flowchart TD
   UI[React chat UI] -->|HTTPS + HttpOnly session cookie + SSE| API[Express modular monolith]
   API --> AUTH[Auth and CSRF middleware]
   AUTH -->|user ownership scope| DB[(PostgreSQL + pgvector)]
-  API --> PARSE[1. Query analysis<br/>LLM intent + entities + dates]
+  API --> TURN[Idempotent chat turn<br/>status + ordered events]
+  TURN --> OUTBOX[(Postgres outbox)]
+  OUTBOX --> WORKER[Bounded research worker]
+  WORKER --> PARSE[1. Query analysis<br/>LLM intent + entities + dates]
   PARSE --> MEM[2. Memory retrieval<br/>FTS + pgvector + entity + temporal]
   MEM --> PLAN[3. Adaptive query planning<br/>queries informed by memory entities]
   PLAN --> LOOP[4. Agentic research loop<br/>search → evaluate coverage → refine]
@@ -18,8 +21,9 @@ flowchart TD
   CLAIMS --> DIFF[7. Temporal diff engine<br/>explicit historical vs current comparison]
   DIFF --> LLM[8. Answer generation<br/>diff + evidence → cited answer]
   LLM --> VERIFY[9. Self-verification<br/>check claims against source text]
-  VERIFY --> DB[(PostgreSQL<br/>FTS + pgvector)]
-  VERIFY -->|SSE: findings + diff + answer| UI
+  VERIFY --> DB[(PostgreSQL<br/>FTS + pgvector + claims)]
+  VERIFY --> EVENTS[(Persisted turn events)]
+  EVENTS -->|SSE: findings + diff + answer| UI
 ```
 
 ## How it works
@@ -60,7 +64,11 @@ The diff is fed to the LLM as structured input, not raw text. The LLM's job beco
 Gemini generates the answer with the structured diff as input alongside raw memory and sources. If Gemini models are unavailable or rate-limited, a provider cooldown suppresses repeated calls and the answer router can use Groq. Output token limit is configurable (default 2048, up from 1200) to accommodate complex comparisons. The server buffers a provider response before sending answer deltas so a failed partial response is never combined with a second provider's answer.
 
 ### 9. Self-verification
-After the answer is generated, each (claim, citation) pair is checked against the cited source's text. The verifier extracts claim-citation pairs from the answer, then checks keyword overlap and price matching between each claim and its cited source. Unsupported claims are flagged with a user-facing notice.
+After the answer is generated, each (claim, citation) pair is checked against the cited source's text. The verifier extracts claim-citation pairs from the answer, then checks keyword overlap and price matching between each claim and its cited source. Unsupported claims are flagged with a user-facing notice. Structured claims now persist with tenant, conversation, message/source provenance, and a stable evidence key.
+
+### 10. Durable turns and indexing
+
+The API creates a `ChatTurn` and `chat.run` outbox event in one transaction. A database worker claims work with `FOR UPDATE SKIP LOCKED`, executes research, and persists ordered `ChatTurnEvent` rows. SSE reads those rows, so a client can reconnect using the idempotency key and last event sequence. Completed assistant messages enqueue `memory.index` in the same transaction; that worker retries chunk, embedding, mention, and rolling-summary updates independently of the user request.
 
 ## Why we built it this way
 
@@ -90,7 +98,7 @@ After the answer is generated, each (claim, citation) pair is checked against th
 
 ## Database design
 
-PostgreSQL stores authoritative messages, conversation metadata, sources, entities, and memory chunks. pgvector keeps embeddings beside relational data for a single Neon deployment. Hybrid retrieval combines FTS, semantic cosine distance, and entity mentions with RRF. The `ResearchClaim` table supports structured claim storage for future persistence. The `ConversationSummary` table is reserved for rolling summaries of long conversations.
+PostgreSQL stores authoritative messages, conversation metadata, sources, entities, claims, chat turns/events, outbox work, and memory chunks. pgvector keeps embeddings beside relational data for a single Neon deployment. Hybrid retrieval combines indexed full-text search over messages and chunks, semantic cosine distance, persisted claims, extractive conversation summaries, and entity mentions with RRF. Derived memory work is retryable through the outbox.
 
 ## Temporal behavior
 
@@ -137,4 +145,4 @@ The cooldown is currently process-local. Before scaling the API horizontally, st
 
 PostgreSQL is authoritative for identity and conversation history. Memory chunks, vectors, and full-text vectors are derived and can be rebuilt. Apply schema changes through additive migrations, back up hosted data, and verify restore procedures. Keep pgvector and full-text retrieval bounded by per-user scope and result limits.
 
-The bounded research loop currently runs within an HTTP request and emits progress over SSE. If jobs approach proxy timeout limits or need retries after server restarts, move orchestration to a durable queue, persist job state, and let SSE subscribe to job events. Add idempotency keys before automatic client retries to prevent duplicate saved messages. Keep search rounds, extraction count, context size, token output, and wall time bounded.
+Research is now queued durably and SSE subscribes to persisted turn events. Keep separate limits for concurrent jobs, per-user queue depth, search rounds, extraction count, context tokens, output tokens, and wall time. Production deployments still need queue-depth alerts, worker autoscaling based on backlog, event retention policies, and database backup/restore drills.

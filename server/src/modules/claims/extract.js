@@ -90,17 +90,14 @@ Return JSON array only:`;
  * Extract claims from memory chunks and web sources in parallel.
  */
 export async function extractAllClaims({ memoryChunks, webSources, geminiModule, signal }) {
-  const memoryText = memoryChunks.map((c) => c.content).join('\n\n');
-  const webText = webSources.map((s) => {
-    const parts = [s.snippet];
-    if (s.extractedContent) parts.push(s.extractedContent);
-    return parts.join('\n');
-  }).join('\n\n');
-
-  const [memoryClaims, webClaims] = await Promise.all([
-    extractClaimsWithLLM(memoryText, 'memory', geminiModule, signal).catch(() => extractClaimsFast(memoryText)),
-    extractClaimsWithLLM(webText, 'web', geminiModule, signal).catch(() => extractClaimsFast(webText))
-  ]);
-
-  return { memoryClaims, webClaims };
+  const memoryBatches = await Promise.all(memoryChunks.map(async (chunk) => {
+    const claims = await extractClaimsWithLLM(chunk.content, 'memory', geminiModule, signal).catch(() => extractClaimsFast(chunk.content));
+    return claims.map((claim) => ({ ...claim, conversationId: chunk.conversationId, messageId: chunk.metadata?.messageIds?.at(-1) ?? null }));
+  }));
+  const webBatches = await Promise.all(webSources.map(async (source) => {
+    const text = [source.snippet, source.extractedContent].filter(Boolean).join('\n');
+    const claims = await extractClaimsWithLLM(text, 'web', geminiModule, signal).catch(() => extractClaimsFast(text));
+    return claims.map((claim) => ({ ...claim, sourceUrl: source.url }));
+  }));
+  return { memoryClaims: memoryBatches.flat(), webClaims: webBatches.flat() };
 }

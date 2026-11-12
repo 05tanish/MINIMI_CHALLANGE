@@ -25,16 +25,25 @@ export async function retrieveMemory(query, timezone = env.USER_TIMEZONE, signal
   const messageRows = await prisma.$queryRawUnsafe(`
     SELECT m.id, m."conversationId", m.content, m.role AS topic,
       m."createdAt" AS "startAt", m."createdAt" AS "endAt",
-      ts_rank(to_tsvector('simple', m.content), plainto_tsquery('simple', $1)) AS rank
+      ts_rank(m."searchVector", plainto_tsquery('simple', $1)) AS rank
     FROM "Message" m
     JOIN "Conversation" c ON c.id = m."conversationId"
     WHERE c."userId" = $2
       AND m.role IN ('user', 'assistant')
       AND m.id <> COALESCE($3, '')
-      AND to_tsvector('simple', m.content) @@ plainto_tsquery('simple', $1)
+      AND m."searchVector" @@ plainto_tsquery('simple', $1)
       ${messageDateSql}
     ORDER BY rank DESC, m."createdAt" DESC
     LIMIT 20`, ...messageParams);
+  const summaryRows = await prisma.$queryRaw`
+    SELECT 'summary_' || s."conversationId" AS id, s."conversationId", s.summary AS content,
+      'Conversation summary' AS topic, s."createdAt" AS "startAt", s."updatedAt" AS "endAt",
+      ts_rank(to_tsvector('simple', s.summary), plainto_tsquery('simple', ${query})) AS rank
+    FROM "ConversationSummary" s
+    JOIN "Conversation" c ON c.id = s."conversationId"
+    WHERE c."userId" = ${userId}
+      AND to_tsvector('simple', s.summary) @@ plainto_tsquery('simple', ${query})
+    ORDER BY rank DESC LIMIT 10`;
   const entityRows = [];
   for (const entity of extractEntities(query)) {
     const normalized = entity.name.toLowerCase();
@@ -45,6 +54,17 @@ export async function retrieveMemory(query, timezone = env.USER_TIMEZONE, signal
       entityRows.push(...rows);
     } catch { /* direct message and full-text retrieval remain available */ }
   }
+  const names = extractEntities(query).map((entity) => entity.name.toLowerCase());
+  const claimRows = names.length ? (await prisma.researchClaim.findMany({
+    where: { userId, entity: { normalizedName: { in: names } } },
+    include: { entity: { select: { name: true } }, source: { select: { title: true, url: true } } },
+    orderBy: { recordedAt: 'desc' }, take: 30
+  })).map((claim) => ({
+    id: `claim_${claim.id}`,
+    conversationId: claim.conversationId ?? '',
+    content: `${claim.entity.name} ${claim.attribute}: ${claim.value}${claim.source?.title ? ` (source: ${claim.source.title})` : ''}`,
+    topic: `Saved ${claim.origin} claim`, startAt: claim.validAt ?? claim.recordedAt, endAt: claim.recordedAt
+  })) : [];
   let vectorRows = [];
   try {
     const vector = await embedText(query, signal);
@@ -55,5 +75,5 @@ export async function retrieveMemory(query, timezone = env.USER_TIMEZONE, signal
       vectorRows = await prisma.$queryRawUnsafe(`SELECT mc.id, mc."conversationId", mc.content, mc.topic, mc."startAt", mc."endAt" FROM "MemoryChunk" mc JOIN "Conversation" c ON c.id = mc."conversationId" WHERE c."userId" = $2 AND mc.embedding IS NOT NULL ${vectorDate} ORDER BY mc.embedding <=> $1::vector LIMIT 25`, ...vectorParams);
     }
   } catch { /* keyword path remains useful when embeddings are unavailable */ }
-  return { chunks: reciprocalRankFusion([keywordRows, messageRows, vectorRows, entityRows], 60).slice(0, env.MAX_CONTEXT_CHUNKS), range, retrievalSucceeded: true };
+  return { chunks: reciprocalRankFusion([keywordRows, messageRows, summaryRows, claimRows, vectorRows, entityRows], 60).slice(0, env.MAX_CONTEXT_CHUNKS), range, retrievalSucceeded: true };
 }

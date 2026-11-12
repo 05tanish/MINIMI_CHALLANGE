@@ -1,10 +1,10 @@
+import crypto from 'node:crypto';
 import { prisma } from '../../infrastructure/database/prisma.js';
 import { logger } from '../../infrastructure/logging/logger.js';
 import { routeIntent } from '../agent/routing.js';
 import { retrieveMemory } from '../retrieval/retrieve.js';
-import { analyzeQuery, generateAnswer, embedText } from '../../infrastructure/llm/gemini.js';
+import { analyzeQuery, generateAnswer } from '../../infrastructure/llm/gemini.js';
 import { geminiInternals } from '../../infrastructure/llm/gemini.js';
-import { extractEntities, makeTopicChunks } from '../retrieval/chunking.js';
 import { validateCitations } from '../citations/validate.js';
 import { verifyClaims, verificationNotice } from '../citations/verify.js';
 import { planSearchQueries, researchLoop } from '../agent/research.js';
@@ -12,13 +12,72 @@ import { extractAllClaims } from '../claims/extract.js';
 import { diffClaims, formatDiffForLLM } from '../temporal/diff.js';
 import { extractDateRange } from '../temporal/temporal.js';
 import { env } from '../../config/env.js';
+import { normalizeEntity } from '../claims/extract.js';
 
-export async function runChat({ conversationId, message, userId, onEvent }) {
+export async function runChat({ conversationId, message, userId, idempotencyKey, onEvent, shouldStop = () => false, afterSequence = 0 }) {
   if (!prisma) throw Object.assign(new Error('Database is not configured'), { code: 'DATABASE_UNAVAILABLE' });
-  let conversation = conversationId ? await prisma.conversation.findFirst({ where: { id: conversationId, userId } }) : null;
+  const key = idempotencyKey || crypto.randomUUID();
+  const existingTurn = await prisma.chatTurn.findUnique({ where: { userId_idempotencyKey: { userId, idempotencyKey: key } }, include: { conversation: true, userMessage: true, assistantMessage: { include: { sources: true } } } });
+  if (existingTurn && existingTurn.userMessage.content !== message) throw Object.assign(new Error('This Idempotency-Key was already used for a different message.'), { code: 'IDEMPOTENCY_CONFLICT' });
+  let conversation = existingTurn?.conversation ?? (conversationId ? await prisma.conversation.findFirst({ where: { id: conversationId, userId } }) : null);
   if (conversationId && !conversation) throw Object.assign(new Error('Conversation was not found'), { code: 'NOT_FOUND' });
-  if (!conversation) conversation = await prisma.conversation.create({ data: { userId, title: message.slice(0, 80) } });
-  const userMessage = await prisma.message.create({ data: { conversationId: conversation.id, role: 'user', content: message } });
+  let turn = existingTurn;
+  if (!turn) {
+    let created;
+    try {
+      created = await prisma.$transaction(async (tx) => {
+        const currentConversation = conversation ?? await tx.conversation.create({ data: { userId, title: message.slice(0, 80) } });
+        const currentUserMessage = await tx.message.create({ data: { conversationId: currentConversation.id, role: 'user', content: message } });
+        const currentTurn = await tx.chatTurn.create({ data: { userId, conversationId: currentConversation.id, userMessageId: currentUserMessage.id, idempotencyKey: key, status: 'queued' } });
+        await tx.outboxEvent.create({ data: { type: 'chat.run', aggregateId: currentConversation.id, payload: { turnId: currentTurn.id } } });
+        return { conversation: currentConversation, userMessage: currentUserMessage, turn: currentTurn };
+      });
+    } catch (error) {
+      // Two browser retries can both observe no row before either transaction
+      // commits. The unique constraint chooses a winner; replay that turn.
+      if (error.code !== 'P2002') throw error;
+      const racedTurn = await prisma.chatTurn.findUnique({ where: { userId_idempotencyKey: { userId, idempotencyKey: key } }, include: { conversation: true, userMessage: true, assistantMessage: { include: { sources: true } } } });
+      if (!racedTurn) throw error;
+      if (racedTurn.userMessage.content !== message) throw Object.assign(new Error('This Idempotency-Key was already used for a different message.'), { code: 'IDEMPOTENCY_CONFLICT' });
+      created = { conversation: racedTurn.conversation, turn: racedTurn };
+    }
+    conversation = created.conversation; turn = created.turn;
+  } else if (turn.status === 'failed') {
+    await prisma.$transaction(async (tx) => {
+      await tx.chatTurn.update({ where: { id: turn.id }, data: { status: 'queued', errorCode: null } });
+      const pending = await tx.outboxEvent.findFirst({ where: { aggregateId: conversation.id, type: 'chat.run', status: { in: ['pending', 'processing'] } } });
+      if (!pending) await tx.outboxEvent.create({ data: { type: 'chat.run', aggregateId: conversation.id, payload: { turnId: turn.id } } });
+    });
+  }
+  let sequence = afterSequence;
+  while (!shouldStop()) {
+    const events = await prisma.chatTurnEvent.findMany({ where: { turnId: turn.id, sequence: { gt: sequence } }, orderBy: { sequence: 'asc' }, take: 100 });
+    for (const event of events) { sequence = event.sequence; onEvent({ ...event.payload, sequence, type: event.type }); }
+    const current = await prisma.chatTurn.findUnique({ where: { id: turn.id }, select: { status: true } });
+    if (['completed', 'failed'].includes(current?.status) && events.length < 100) break;
+    if (!shouldStop()) await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+}
+
+export async function processChatTurn({ turnId, onEvent }) {
+  const turn = await prisma.chatTurn.findUnique({ where: { id: turnId }, include: { conversation: true, userMessage: true, assistantMessage: { include: { sources: true } } } });
+  if (!turn || turn.status === 'completed') return;
+  if (turn.assistantMessage) {
+    const savedSources = turn.assistantMessage.sources.map((source, index) => ({ ...source, id: `S${index + 1}` }));
+    onEvent({ type: 'done', conversationId: turn.conversationId, messageId: turn.assistantMessage.id, answer: turn.assistantMessage.content, sources: savedSources, retrievalCount: 0, memoryIndexed: false, idempotentReplay: true });
+    await onEvent.flush?.();
+    await prisma.chatTurn.update({ where: { id: turn.id }, data: { status: 'completed', errorCode: null } });
+    return;
+  }
+  await prisma.chatTurn.update({ where: { id: turn.id }, data: { status: 'running', errorCode: null } });
+  return executeChatTurn({ turn, onEvent });
+}
+
+async function executeChatTurn({ turn, onEvent }) {
+  const { conversation, userMessage } = turn;
+  const userId = turn.userId;
+  const message = userMessage.content;
+  if (!prisma) throw Object.assign(new Error('Database is not configured'), { code: 'DATABASE_UNAVAILABLE' });
   const budgetController = new AbortController();
   const budgetTimer = setTimeout(() => budgetController.abort(new Error('Research budget exceeded')), env.RESEARCH_BUDGET_MS);
   budgetTimer.unref();
@@ -84,21 +143,20 @@ export async function runChat({ conversationId, message, userId, onEvent }) {
 
   // 5. Structured claim extraction + temporal diff
   let diff = null;
-  if (routing.memory && routing.web && memory.chunks.length && sources.length) {
-    onEvent({ type: 'progress', stage: 'compare', detail: 'Extracting and comparing claims...' });
+  let claims = { memoryClaims: [], webClaims: [] };
+  if (memory.chunks.length || sources.length) {
+    if (memory.chunks.length && sources.length) onEvent({ type: 'progress', stage: 'compare', detail: 'Extracting and comparing claims...' });
     try {
-      const { memoryClaims, webClaims } = await extractAllClaims({
-        memoryChunks: memory.chunks,
-        webSources: sources,
-        geminiModule: geminiInternals,
-        signal: budgetController.signal
-      });
+      claims = await extractAllClaims({ memoryChunks: memory.chunks, webSources: sources, geminiModule: geminiInternals, signal: budgetController.signal });
+      if (memory.chunks.length && sources.length) {
+        const { memoryClaims, webClaims } = claims;
       diff = diffClaims(memoryClaims, webClaims);
       if (diff?.entries?.length) {
         onEvent({ type: 'findings', findingsType: 'diff', items: diff.entries, summary: diff.summary });
         onEvent({ type: 'progress', stage: 'compare', detail: diff.summary });
       } else {
         onEvent({ type: 'progress', stage: 'compare', detail: 'No structured claims to compare' });
+      }
       }
     } catch (error) {
       logger.warn({ code: error.code ?? error.name }, 'Claim extraction or diff failed');
@@ -151,41 +209,36 @@ export async function runChat({ conversationId, message, userId, onEvent }) {
   // 9. Persist assistant message + sources
   const assistant = await prisma.$transaction(async (tx) => {
     const row = await tx.message.create({ data: { conversationId: conversation.id, role: 'assistant', content: answer } });
-    for (const source of sources) await tx.researchSource.upsert({ where: { messageId_url: { messageId: row.id, url: source.url } }, create: { conversationId: conversation.id, messageId: row.id, title: source.title, url: source.url, snippet: source.snippet, publishedAt: source.publishedAt ? new Date(source.publishedAt) : null, metadata: { retrievedAt: source.retrievedAt, hasExtractedContent: Boolean(source.extractedContent) } }, update: {} });
+    const sourceIds = new Map();
+    for (const source of sources) {
+      const saved = await tx.researchSource.upsert({ where: { messageId_url: { messageId: row.id, url: source.url } }, create: { conversationId: conversation.id, messageId: row.id, title: source.title, url: source.url, snippet: source.snippet, publishedAt: source.publishedAt ? new Date(source.publishedAt) : null, metadata: { retrievedAt: source.retrievedAt, hasExtractedContent: Boolean(source.extractedContent) } }, update: {} });
+      sourceIds.set(source.url, saved.id);
+    }
+    const persistedClaims = [];
+    for (const claim of claims.memoryClaims) {
+      const entityName = claim.entity?.trim(); if (!entityName || entityName === '(unknown)') continue;
+      const entityKey = normalizeEntity(entityName); if (!entityKey) continue;
+      const entity = await tx.entity.upsert({ where: { normalizedName: entityKey }, create: { name: entityName, normalizedName: entityKey, type: 'research' }, update: {} });
+      const conversationKey = claim.conversationId ?? conversation.id;
+      const evidenceKey = crypto.createHash('sha256').update([userId, conversationKey, 'memory', claim.messageId ?? '', entityKey, claim.attribute, claim.value.toLowerCase()].join('|')).digest('hex');
+      persistedClaims.push({ userId, conversationId: conversationKey, entityId: entity.id, attribute: claim.attribute, value: claim.value, validAt: claim.date ? new Date(claim.date) : null, messageId: claim.messageId, sourceId: null, origin: 'memory', evidenceKey });
+    }
+    for (const claim of claims.webClaims) {
+      const entityName = claim.entity?.trim(); if (!entityName || entityName === '(unknown)') continue;
+      const entityKey = normalizeEntity(entityName); if (!entityKey) continue;
+      const entity = await tx.entity.upsert({ where: { normalizedName: entityKey }, create: { name: entityName, normalizedName: entityKey, type: 'research' }, update: {} });
+      const sourceId = sourceIds.get(claim.sourceUrl) ?? null;
+      const evidenceKey = crypto.createHash('sha256').update([userId, conversation.id, 'web', sourceId ?? '', entityKey, claim.attribute, claim.value.toLowerCase()].join('|')).digest('hex');
+      persistedClaims.push({ userId, conversationId: conversation.id, entityId: entity.id, attribute: claim.attribute, value: claim.value, validAt: claim.date ? new Date(claim.date) : null, messageId: row.id, sourceId, origin: 'web', evidenceKey });
+    }
+    if (persistedClaims.length) await tx.researchClaim.createMany({ data: persistedClaims, skipDuplicates: true });
     await tx.conversation.update({ where: { id: conversation.id }, data: { updatedAt: new Date() } });
+    await tx.chatTurn.update({ where: { id: turn.id }, data: { assistantMessageId: row.id, errorCode: null } });
+    await tx.outboxEvent.create({ data: { type: 'memory.index', aggregateId: conversation.id, payload: { conversationId: conversation.id, turnId: turn.id } } });
     return row;
   }, { timeout: 15000 });
 
-  // 10. Index memory (embeddings + entities) — outside transaction, same as before
-  let memoryIndexed = false;
-  try {
-    const recentMessages = await prisma.message.findMany({ where: { conversationId: conversation.id }, orderBy: { createdAt: 'desc' }, take: 100 });
-    const entityByMessage = { [userMessage.id]: analysis.entities };
-    const chunks = makeTopicChunks(recentMessages.reverse(), entityByMessage).map((chunk) => ({ ...chunk, id: `chunk_${conversation.id}_${chunk.messageIds.join('_')}` }));
-    const existing = await prisma.memoryChunk.findMany({ where: { id: { in: chunks.map((chunk) => chunk.id) } }, select: { id: true } });
-    const existingIds = new Set(existing.map((row) => row.id));
-    const missingChunks = chunks.filter((chunk) => !existingIds.has(chunk.id));
-    const embeddedChunks = await mapWithConcurrency(missingChunks, 2, async (chunk) => ({ ...chunk, embedding: await embedText(chunk.content, budgetController.signal).catch((error) => { logger.warn({ code: error.code ?? error.name }, 'Memory embedding failed; storing keyword index only'); return null; }) }));
-    await prisma.$transaction(async (tx) => {
-      for (const chunk of embeddedChunks) {
-        await tx.$executeRaw`INSERT INTO "MemoryChunk" (id, "conversationId", content, topic, entities, metadata, "startAt", "endAt", embedding, "searchVector") VALUES (${chunk.id}, ${conversation.id}, ${chunk.content}, ${chunk.topic}, ${JSON.stringify(chunk.entities)}::jsonb, ${JSON.stringify({ messageIds: chunk.messageIds })}::jsonb, ${chunk.startAt}, ${chunk.endAt}, ${chunk.embedding ? `[${chunk.embedding.join(',')}]` : null}::vector, to_tsvector('english', ${chunk.content})) ON CONFLICT (id) DO UPDATE SET content = EXCLUDED.content, embedding = EXCLUDED.embedding, "searchVector" = EXCLUDED."searchVector"`;
-        for (const messageId of chunk.messageIds) for (const entity of chunk.entities) {
-          const normalizedName = entity.name.toLowerCase(); const entityRow = await tx.entity.upsert({ where: { normalizedName }, create: { name: entity.name, normalizedName, type: entity.type }, update: {} });
-          await tx.entityMention.upsert({ where: { entityId_messageId: { entityId: entityRow.id, messageId } }, create: { entityId: entityRow.id, messageId, conversationId: conversation.id }, update: {} });
-        }
-      }
-    }, { timeout: 20000, maxWait: 10000 });
-    memoryIndexed = true;
-  } catch (error) {
-    logger.warn({ conversationId: conversation.id, code: error.code ?? error.name }, 'Memory indexing failed after answer persistence');
-  }
-  onEvent({ type: 'done', conversationId: conversation.id, messageId: assistant.id, answer, sources, retrievalCount: memory.chunks.length, memoryIndexed, citationValidation: validateCitations(answer, sources), searchRounds: search.rounds, diff: diff?.entries ?? [], diffSummary: diff?.summary ?? null });
-}
-
-async function mapWithConcurrency(items, limit, mapper) {
-  const output = new Array(items.length); let next = 0;
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (next < items.length) { const index = next++; output[index] = await mapper(items[index], index); }
-  }));
-  return output;
+  onEvent({ type: 'done', conversationId: conversation.id, messageId: assistant.id, answer, sources, retrievalCount: memory.chunks.length, memoryIndexed: false, indexingQueued: true, citationValidation: validateCitations(answer, sources), searchRounds: search.rounds, diff: diff?.entries ?? [], diffSummary: diff?.summary ?? null });
+  await onEvent.flush?.();
+  await prisma.chatTurn.update({ where: { id: turn.id }, data: { status: 'completed', errorCode: null } });
 }

@@ -7,6 +7,11 @@ describe('HTTP API', () => {
     const response = await request(app).post('/api/chat').send({ message: '' });
     expect(response.status).toBe(400); expect(response.body.error.code).toBe('INVALID_REQUEST');
   });
+  it('requires an idempotency key for accepted chat turns', async () => {
+    const response = await request(app).post('/api/chat').send({ message: 'Explain relational databases.' });
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe('IDEMPOTENCY_KEY_REQUIRED');
+  });
   it('rejects weak signup credentials before accessing the database', async () => {
     const response = await request(app).post('/api/auth/signup').send({ email: 'not-an-email', password: 'short' });
     expect(response.status).toBe(400);

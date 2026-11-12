@@ -42,6 +42,7 @@ const schema = z.object({
   VERIFY_CLAIMS: z.coerce.boolean().default(true),
   SEARCH_DEPTH: z.enum(['basic', 'advanced']).default('basic'),
   MAX_CONTEXT_CHUNKS: z.coerce.number().default(8),
+  MAX_CONTEXT_TOKENS: z.coerce.number().int().min(2000).max(50000).default(12000),
   MAX_REQUEST_BYTES: z.string().default('64kb')
 });
 
