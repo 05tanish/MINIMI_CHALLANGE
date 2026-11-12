@@ -70,6 +70,12 @@ npm test
 
 Unit tests cover routing, dates, entity extraction, chunking, RRF, citations and retries. API tests cover validation and readiness behavior. `tests/evaluation/scenarios.json` contains 20 evaluation scenarios, including all three assignment examples; these are scenario fixtures, not an automated live-provider scorecard. Database/provider integration should be run against configured services with secrets kept outside source control.
 
+## GitHub Actions workflow
+
+`CI` runs automatically for pull requests and pushes to `main` or `master`. It installs the locked dependencies, validates the Prisma schema, generates the Prisma client, runs `npm test`, and builds the client. CI does not connect to or modify a real database; it uses a placeholder database URL only for Prisma commands.
+
+`Apply production database migrations` is a manual workflow. Before using it, create a GitHub environment named `production` and add `DATABASE_URL_PRODUCTION` as an environment secret. Then open **Actions → Apply production database migrations → Run workflow**, select the `production` environment if prompted, and start the run. Wait for it to succeed before deploying application code that requires those schema changes. The workflow runs `npm run db:migrate`, which applies only pending migrations. For local or other-host deployments, run `npm run db:migrate` against the intended database before starting the new server version.
+
 ## API
 
 - `POST /api/chat` — JSON `{ "conversationId?": "...", "message": "..." }`; responds with SSE events: `conversation`, `progress` (with `detail`), `findings` (memory matches, search results, diff entries), `delta`, `done` (with `sources`, `diff`, `diffSummary`, `searchRounds`), or `error`.
@@ -93,7 +99,7 @@ Authentication uses scrypt password hashes, random opaque session tokens (only S
 
 ## Deployment
 
-Deploy the client and API behind a shared HTTPS site or same-site domains (for example, `app.example.com` and `api.example.com`), set `CLIENT_ORIGIN`, `DATABASE_URL`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `TAVILY_API_KEY`, and `TRUST_PROXY=true` when TLS terminates at one trusted edge proxy, then apply migrations via `npm run db:migrate`. The new architecture migration must be deployed before starting this server version. Use a pooled Neon runtime URL and an appropriate direct URL only if your migration workflow requires it. Free-tier quotas and provider terms change; check current provider documentation before launch.
+Deploy the client and API behind a shared HTTPS site or same-site domains (for example, `app.example.com` and `api.example.com`), set `CLIENT_ORIGIN`, `DATABASE_URL`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `TAVILY_API_KEY`, and `TRUST_PROXY=true` when TLS terminates at one trusted edge proxy. Run the production migration workflow described above before deploying server changes that require pending migrations. Use a pooled Neon runtime URL and an appropriate direct URL only if your migration workflow requires it. Free-tier quotas and provider terms change; check current provider documentation before launch.
 
 ## Limitations
 
