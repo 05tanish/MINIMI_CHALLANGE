@@ -1,0 +1,118 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Conversation {
+  id        String   @id @default(cuid())
+  title     String   @default("New conversation")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  messages  Message[]
+  chunks    MemoryChunk[]
+  summary   ConversationSummary?
+  sources   ResearchSource[]
+  mentions  EntityMention[]
+
+  @@index([updatedAt])
+}
+
+model Message {
+  id             String   @id @default(cuid())
+  conversationId String
+  role           String
+  content        String   @db.Text
+  createdAt      DateTime @default(now())
+  conversation  Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  mentions       EntityMention[]
+  claims         ResearchClaim[]
+  sources        ResearchSource[]
+
+  @@index([conversationId, createdAt])
+}
+
+model MemoryChunk {
+  id             String   @id @default(cuid())
+  conversationId String
+  content        String   @db.Text
+  topic          String?
+  entities       Json     @default("[]")
+  metadata       Json     @default("{}")
+  startAt        DateTime
+  endAt          DateTime
+  embedding      Unsupported("vector(768)")?
+  searchVector   Unsupported("tsvector")?
+  createdAt      DateTime @default(now())
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, startAt, endAt])
+}
+
+model Entity {
+  id             String @id @default(cuid())
+  name           String
+  normalizedName String @unique
+  type           String
+  mentions       EntityMention[]
+  claims         ResearchClaim[]
+}
+
+model EntityMention {
+  id             String @id @default(cuid())
+  entityId       String
+  messageId      String
+  conversationId String
+  createdAt      DateTime @default(now())
+  entity         Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  message        Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([entityId, messageId])
+  @@index([conversationId, createdAt])
+}
+
+model ConversationSummary {
+  id             String @id @default(cuid())
+  conversationId String @unique
+  summary        String @db.Text
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  conversation  Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+}
+
+model ResearchSource {
+  id             String @id @default(cuid())
+  conversationId String
+  messageId      String
+  title          String
+  url            String
+  snippet        String @db.Text
+  publishedAt    DateTime?
+  retrievedAt    DateTime @default(now())
+  sourceType     String @default("web")
+  metadata       Json @default("{}")
+  conversation  Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  message        Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, url])
+  @@index([conversationId, retrievedAt])
+}
+
+model ResearchClaim {
+  id         String @id @default(cuid())
+  entityId   String
+  attribute  String
+  value      String
+  validAt    DateTime?
+  recordedAt DateTime @default(now())
+  sourceId   String?
+  messageId  String?
+  entity     Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  message    Message? @relation(fields: [messageId], references: [id], onDelete: SetNull)
+
+  @@index([entityId, attribute, recordedAt])
+}

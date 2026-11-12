@@ -1,0 +1,41 @@
+{
+  "name": "minimi-context-research-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -n server,client -c blue,green \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:server": "node --watch server/src/server.js",
+    "dev:client": "vite --config client/vite.config.js --host 0.0.0.0",
+    "build": "vite build --config client/vite.config.js",
+    "start": "node server/src/server.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:generate": "node scripts/prisma.js generate",
+    "db:migrate": "node scripts/prisma.js migrate deploy",
+    "db:migrate:dev": "node scripts/prisma.js migrate dev"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.19.0",
+    "@google/genai": "^1.33.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.1.0",
+    "helmet": "^8.1.0",
+    "pino": "^9.6.0",
+    "pino-http": "^10.4.0",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.0.0",
+    "autoprefixer": "^10.4.21",
+    "concurrently": "^9.1.2",
+    "postcss": "^8.5.6",
+    "prisma": "^6.19.0",
+    "supertest": "^7.1.4",
+    "tailwindcss": "^3.4.17",
+    "vite": "^7.1.7",
+    "vitest": "^5.1.0"
+  }
+}

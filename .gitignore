@@ -1,0 +1,77 @@
+# Dependencies
+node_modules/
+
+# Build output and generated files
+client/dist/
+dist/
+build/
+.next/
+.turbo/
+.cache/
+coverage/
+*.tsbuildinfo
+
+# Environment files and local secrets
+.env
+.env.*
+*.env
+*.env.*
+!.env.example
+!*.env.example
+.envrc
+.secrets
+.secrets.*
+.tavily/
+.aws/
+.ssh/
+.npmrc
+!.npmrc.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.p8
+*.jks
+*.keystore
+*.mobileprovision
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+*service-account*.json
+*credentials*.json
+application_default_credentials.json
+secrets.json
+secrets.*.json
+
+# Local databases and runtime artifacts
+*.sqlite
+*.sqlite-*
+*.db
+*.db-journal
+*.pid
+*.sock
+*.log
+
+# Infrastructure state and local variables
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.auto.tfvars
+
+# Deployment state
+.vercel/
+.netlify/
+.render/
+
+# Operating system and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Temporary files
+*.tmp
+*.swp
+*.bak

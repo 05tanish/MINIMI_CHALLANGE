@@ -1,0 +1,22 @@
+[
+  {"id":"assignment-1","setup":"Shortlist five CRM tools for a 20-person sales team with historical prices.","query":"On Monday we shortlisted 5 CRM tools for a 20-person sales team. Has any changed pricing or shipped something big since?","checks":["memory","web","comparison","citations"]},
+  {"id":"assignment-2","setup":"Ask a factual question on 3 November and preserve the answer.","query":"What did I ask you on 3 November? Is your answer still correct today?","checks":["date-filter","memory","web","citations"]},
+  {"id":"assignment-3","setup":"Discuss Postgres hosting providers, plans and prices last Tuesday.","query":"Last Tuesday I asked you about Postgres hosting. Has any pricing changed since?","checks":["weekday-filter","memory","web","comparison"]},
+  {"id":"semantic-retrieval","setup":"Discuss Supabase database backups.","query":"Which hosted database provider did we say had point-in-time recovery?","checks":["semantic-memory"]},
+  {"id":"exact-keyword","setup":"Mention Neon, Supabase and PostgreSQL in a comparison.","query":"What did we say about Neon specifically?","checks":["keyword","entity"]},
+  {"id":"product-comparison","setup":"Compare HubSpot and Pipedrive.","query":"Compare the two CRM tools we reviewed last month.","checks":["memory","entity"]},
+  {"id":"release-updates","setup":"Discuss GitHub Copilot.","query":"What major releases has it shipped recently?","checks":["web","citations"]},
+  {"id":"conflicting-sources","setup":"No historical claim.","query":"Sources disagree about this service's current plan limits. What is verified?","checks":["conflict-reporting"]},
+  {"id":"missing-history","setup":"No prior conversations exist.","query":"What did I decide about hosting?","checks":["no-fabricated-memory"]},
+  {"id":"search-unavailable","setup":"Tavily returns errors.","query":"Is today's pricing different from the price we discussed?","checks":["partial-failure"]},
+  {"id":"llm-unavailable","setup":"Gemini returns an error after user-message persistence.","query":"Compare our old price with current pricing.","checks":["persistence","controlled-error"]},
+  {"id":"database-unavailable","setup":"Postgres connection is unavailable.","query":"Tell me what I asked yesterday.","checks":["controlled-error"]},
+  {"id":"ambiguous-date","setup":"Discuss on November 3 in a year unspecified.","query":"What did we discuss on 3 November?","checks":["date-ambiguity"]},
+  {"id":"no-current-evidence","setup":"Tavily returns no usable evidence.","query":"Has the feature changed recently?","checks":["no-invention"]},
+  {"id":"multi-provider","setup":"Compare Neon, Supabase and Render Postgres.","query":"Which of those providers changed pricing?","checks":["multiple-entities","bounded-search"]},
+  {"id":"yesterday","setup":"Discuss a vendor yesterday.","query":"What did we decide yesterday?","checks":["temporal"]},
+  {"id":"last-month","setup":"Several conversations in October.","query":"Summarize our hosting discussions last month.","checks":["temporal"]},
+  {"id":"stable-technical","setup":"No relevant conversation.","query":"Explain a PostgreSQL index.","checks":["no-unneeded-search"]},
+  {"id":"price-conditions","setup":"Historical price with annual billing and usage limits.","query":"Is the plan we chose still the same price today?","checks":["conditions","citations"]},
+  {"id":"source-dedup","setup":"Search provider returns duplicate URLs.","query":"Find official pricing for our selected product.","checks":["deduplication"]}
+]
