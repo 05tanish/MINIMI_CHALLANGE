@@ -16,8 +16,8 @@
     "db:migrate:dev": "node scripts/prisma.js migrate dev"
   },
   "dependencies": {
-    "@prisma/client": "^6.19.0",
     "@google/genai": "^1.33.0",
+    "@prisma/client": "^6.19.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^5.1.0",
@@ -25,6 +25,8 @@
     "helmet": "^8.1.0",
     "pino": "^9.6.0",
     "pino-http": "^10.4.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "zod": "^4.1.0"
   },
   "devDependencies": {
