@@ -2,21 +2,20 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import pinoHttp from 'pino-http';
-import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { env } from './config/env.js';
 import { logger } from './infrastructure/logging/logger.js';
 import { prisma } from './infrastructure/database/prisma.js';
 import { runChat } from './modules/chat/service.js';
 import { errorHandler } from './middleware/errors.js';
+import { authenticate, rateLimitRequest } from './middleware/security.js';
 
 export const app = express();
 app.disable('x-powered-by');
 app.use(helmet());
 app.use(cors({ origin: env.CLIENT_ORIGIN.split(',').map((x) => x.trim()) }));
-app.use(express.json({ limit: env.MAX_REQUEST_BYTES }));
 app.use(pinoHttp({ logger, genReqId: (req) => req.headers['x-request-id']?.toString().slice(0, 100) || crypto.randomUUID(), redact: ['req.headers.authorization', 'req.body.message'] }));
-app.use('/api', rateLimit({ windowMs: env.RATE_LIMIT_WINDOW_MS, limit: env.RATE_LIMIT_MAX, standardHeaders: 'draft-8', legacyHeaders: false }));
+app.use('/api', authenticate, rateLimitRequest, express.json({ limit: env.MAX_REQUEST_BYTES }));
 
 app.get('/api/health', async (req, res) => {
   let database = 'not_configured';

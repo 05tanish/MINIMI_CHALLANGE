@@ -4,13 +4,23 @@ export async function withRetry(operation, { retries = 1, baseDelayMs = 250, max
     try { return await operation(attempt); }
     catch (error) {
       if (attempt >= retries || !shouldRetry(error) || signal?.aborted) throw error;
-      const retryAfter = Number(error.retryAfter ?? 0) * 1000;
+      const retryAfter = parseRetryAfter(error.retryAfter);
       const jitter = Math.random() * Math.min(maxDelayMs, baseDelayMs * 2 ** attempt);
       await new Promise((resolve, reject) => {
-        const timer = setTimeout(resolve, Math.max(retryAfter, jitter));
-        signal?.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
+        const timer = setTimeout(done, Math.max(retryAfter, jitter));
+        function done() { signal?.removeEventListener('abort', abort); resolve(); }
+        function abort() { clearTimeout(timer); reject(signal.reason ?? new Error('Operation aborted')); }
+        signal?.addEventListener('abort', abort, { once: true });
+        if (signal?.aborted) abort();
       });
       attempt += 1;
     }
   }
+}
+
+function parseRetryAfter(value) {
+  if (value == null) return 0;
+  const seconds = Number(value);
+  const milliseconds = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(value) - Date.now();
+  return Math.max(0, Math.min(30_000, Number.isFinite(milliseconds) ? milliseconds : 0));
 }

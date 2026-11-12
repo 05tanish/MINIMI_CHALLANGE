@@ -77,7 +77,7 @@ Responses use `{ success, data, error }` where applicable. SSE progress names ar
 
 The repository ignores environment files, local provider config, credentials, private key/keystore formats, local databases, logs, build output and common deployment state. Keep real credentials in `.env` locally and in the hosting provider's secret store after deployment. Do not commit `.env`.
 
-The API currently has **no authentication or per-user authorization**. CORS and rate limiting do not restrict access to data: anyone who can reach the API can list, read, rename or delete conversations. Do not expose it publicly with private data until authentication and conversation ownership checks are implemented.
+All `/api` routes require the same bearer token when `AUTH_TOKEN` is configured. Set `VITE_API_TOKEN` to the same value when building the client. Production requests fail closed with `503 AUTH_NOT_CONFIGURED` if the server token is missing; development and tests allow an unset token. Authentication and rate limiting run before JSON parsing and route handlers, so unauthorized or over-limit requests do not reach Prisma. Set `REDIS_REST_URL` and `REDIS_REST_TOKEN` to use an Upstash-compatible Redis REST endpoint for a shared atomic rate limit across instances; if Redis is unavailable, the server logs the failure and falls back to a process-local limit.
 
 ## Deployment
 
@@ -85,7 +85,7 @@ Deploy the client build to Vercel with `client` as the project root (or configur
 
 ## Limitations
 
-- There is no authentication or per-user data isolation; this is a single-workspace assignment implementation and should not be exposed publicly with private conversation data.
+- Authentication uses one shared workspace token and does not provide per-user identity or conversation ownership. Use individual user authentication and ownership checks before serving multiple users.
 - Date parsing covers common phrases and nearest-past month/day behavior; it does not yet ask follow-up questions for every ambiguous date.
 - Topic grouping uses contiguous extracted entity sets, not an LLM topic segmenter.
 - The automated evaluation set is declarative; external-service and full database evaluation needs configured credentials and a test database.

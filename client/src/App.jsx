@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 const stages = { understanding: 'Understanding your question', memory: 'Retrieving conversation context', search: 'Searching the web', compare: 'Comparing evidence', answer: 'Preparing your answer' };
+const apiFetch = (url, options = {}) => fetch(url, { ...options, headers: { ...(options.headers ?? {}), ...(import.meta.env.VITE_API_TOKEN ? { authorization: `Bearer ${import.meta.env.VITE_API_TOKEN}` } : {}) } });
 function renderText(text) {
   return text.split(/(\[S\d+\])/g).map((part, i) => /^\[S\d+\]$/.test(part) ? <sup className="cite" key={i}>{part}</sup> : <span key={i}>{part}</span>);
 }
@@ -8,8 +9,8 @@ export default function App() {
   const [conversations, setConversations] = useState([]); const [id, setId] = useState(null); const [messages, setMessages] = useState([]);
   const [input, setInput] = useState(''); const [status, setStatus] = useState(''); const [busy, setBusy] = useState(false); const [error, setError] = useState('');
   const abort = useRef(null); const bottom = useRef(null);
-  async function loadList() { try { const r = await fetch('/api/conversations'); const j = await r.json(); if (j.success) setConversations(j.data.items); } catch {} }
-  async function loadConversation(cid) { const r = await fetch(`/api/conversations/${cid}`); const j = await r.json(); if (j.success) { setId(cid); setMessages(j.data.messages.map((m) => ({ ...m, sources: m.sources ?? [] }))); setError(''); } }
+  async function loadList() { try { const r = await apiFetch('/api/conversations'); const j = await r.json(); if (j.success) setConversations(j.data.items); } catch {} }
+  async function loadConversation(cid) { const r = await apiFetch(`/api/conversations/${cid}`); const j = await r.json(); if (j.success) { setId(cid); setMessages(j.data.messages.map((m) => ({ ...m, sources: m.sources ?? [] }))); setError(''); } }
   useEffect(() => { loadList(); }, []); useEffect(() => { bottom.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, status]);
   async function submit(event) {
     event?.preventDefault(); if (!input.trim() || busy) return;
@@ -17,7 +18,7 @@ export default function App() {
     setMessages((old) => [...old, { role: 'user', content: message, createdAt: new Date().toISOString() }, { role: 'assistant', content: '', sources: [], streaming: true }]);
     const controller = new AbortController(); abort.current = controller;
     try {
-      const response = await fetch('/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ conversationId: id ?? undefined, message }), signal: controller.signal });
+      const response = await apiFetch('/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ conversationId: id ?? undefined, message }), signal: controller.signal });
       if (!response.ok) { const result = await response.json(); throw new Error(result.error?.message ?? 'Request failed'); }
       const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
       while (true) { const { value, done } = await reader.read(); if (done) break; buffer += decoder.decode(value, { stream: true }); const events = buffer.split('\n\n'); buffer = events.pop() ?? ''; for (const raw of events) {
